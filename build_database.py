@@ -6,6 +6,7 @@ import fnmatch
 import tempfile
 import subprocess
 import multiprocessing
+from multiprocessing.managers import BaseManager
 
 import database
 
@@ -37,7 +38,7 @@ def build_list(url):
     #    print(f"{x} : {y}")
     return pkgs
 
-def pkg_worker(pkg, debname):
+def pkg_worker(pkg, debname, db):
     ELF_MAGIC = b"\x7f\x45\x4c\x46"
     cwd = tempfile.mkdtemp(dir=TEMP_DIR)
 
@@ -64,13 +65,13 @@ def pkg_worker(pkg, debname):
                     os.makedirs(dbdir, exist_ok=True)
                     os.rename(ff, final_f)
 
-                    db = database.Database()
+                    #db = database.Database()
                     db.newsession()
                     db.insert(database.Packages(
                         pkgname=pkg,
                         debname=debname,
                         filepath=ff))
-                    db.closesession()
+                    #db.closesession()
 
     shutil.rmtree(cwd)
 
@@ -86,11 +87,14 @@ for url in url_list:
 #pkgs = {"alien-arena-server": "alien-arena-server_7.66+dfsg-5_amd64.deb"}
 pool = multiprocessing.Pool()
 
-# probe database first to make sure database/tables are created
-db = database.Database()
+BaseManager.register('DB', database.Database)
+
+manager = BaseManager()
+manager.start()
+db = manager.DB()
 result = [ \
-        pool.apply_async(pkg_worker, args=(pkg, debname)) \
-        for pkg, debname in pkgs.items() \
+        pool.apply_async(pkg_worker, args=(pkg, debname, db)) \
+        for pkg, debname in pkgs.items() if pkg.startswith("a") \
         ]
 
 pool.close()
