@@ -1,8 +1,11 @@
 #!/usr/bin/python3
 
 import os
+import gzip
+import time
 import shutil
 import fnmatch
+import requests
 import tempfile
 import subprocess
 import multiprocessing
@@ -19,44 +22,56 @@ os.makedirs(DATABASE_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 url_list = [
-        "http://http.us.debian.org/debian/dists/buster/main/binary-all/Packages.gz",
-        "http://http.us.debian.org/debian/dists/buster/non-free/binary-all/Packages.gz",
-        "http://http.us.debian.org/debian/dists/buster/contrib/binary-all/Packages.gz",
+        ["http://http.us.debian.org/debian/", "buster", "mipsel", "main"],
+        ["http://http.us.debian.org/debian/", "buster", "mips64el", "main"],
+        ["http://http.us.debian.org/debian/", "buster", "mips", "main"],
+        ["http://http.us.debian.org/debian/", "buster", "armel", "main"],
+        ["http://http.us.debian.org/debian/", "buster", "armhf", "main"],
+        ["http://http.us.debian.org/debian/", "buster", "arm64", "main"],
+        #["http://http.us.debian.org/debian/", "sid", "mips", "main"],
+        #["http://archive.debian.org/debian/", "buster", "mips", "main"],
         ]
 
-def build_list(url):
-    cmd = ["curl", url, "|", "gunzip"]
-    fetcher = subprocess.Popen(" ".join(cmd), shell=True, stdout=subprocess.PIPE)
-    pkglist = fetcher.stdout.read().decode('latin-1')
+def build_list(baseurl, dist, arch, comp):
+    url = f"{baseurl}dists/{dist}/{comp}/binary-{arch}/Packages.gz"
+    r = requests.get(url)
+    pkglist = gzip.decompress(r.content).decode('latin-1')
     pkgs = {}
     for x in pkglist.split('\n'):
         if x.startswith("Package:"):
-            seenpkg = x[8:].strip()
+            seenpkg = f"{arch}_{x[8:].strip()}"
+        #elif x.startswith("Version:"):
+        #    seenpkg = f"{seenpkg}_{x[8:].strip()}"
         elif x.startswith("Filename:"):
-            pkgs[seenpkg] = os.path.basename(x[8:].strip())
+            pkgs[seenpkg] = f"{baseurl}{x[9:].strip()}"
     #for x,y in pkgs.items():
     #    print(f"{x} : {y}")
     return pkgs
 
-def pkg_worker(pkg, debname, db):
+def pkg_worker(pkg, fileurl, db):
     ELF_MAGIC = b"\x7f\x45\x4c\x46"
     cwd = tempfile.mkdtemp(dir=TEMP_DIR)
 
-    fetchcmd = ["apt", "download", pkg]
-    subprocess.check_call(fetchcmd, cwd=cwd)
+    r = requests.get(fileurl)
+    while not r.ok:
+        time.sleep(0.1)
+        r = requests.get(fileurl)
 
-    subfilelist = fnmatch.filter(os.listdir(cwd), "*.deb")
-    assert(len(subfilelist) == 1)
+    debpath = os.path.join(cwd, f"{pkg}.deb")
+    with open(debpath, 'wb') as fd:
+        fd.write(r.content)
 
-    if debname not in subfilelist:
-        debname = subfilelist[0]
-
-    unpackcmd = ["dpkg", "-x", debname, "./tmp"]
+    unpackcmd = ["dpkg", "-x", debpath, "./tmp"]
     subprocess.check_call(unpackcmd, cwd=cwd)
 
     for root, dirs, files in os.walk(os.path.join(cwd, "tmp")):
         for fn in files:
             ff = os.path.join(root, fn)
+
+            # skip symbolic link
+            if os.path.islink(ff):
+                continue
+
             with open(ff, 'rb') as fd:
                 if fd.read(4) == ELF_MAGIC:
                     dbdir = os.path.join(DATABASE_DIR, pkg)
@@ -65,13 +80,10 @@ def pkg_worker(pkg, debname, db):
                     os.makedirs(dbdir, exist_ok=True)
                     os.rename(ff, final_f)
 
-                    #db = database.Database()
-                    db.newsession()
-                    db.insert(database.Packages(
+                    db.waitinsert(database.Packages(
                         pkgname=pkg,
-                        debname=debname,
+                        url=fileurl,
                         filepath=ff))
-                    #db.closesession()
 
     shutil.rmtree(cwd)
 
@@ -81,8 +93,8 @@ def pkg_worker(pkg, debname, db):
 #mpl.setLevel(logging.DEBUG)
 
 pkgs = {}
-for url in url_list:
-    pkgs.update(build_list(url))
+for urltup in url_list:
+    pkgs.update(build_list(*urltup))
 
 #pkgs = {"alien-arena-server": "alien-arena-server_7.66+dfsg-5_amd64.deb"}
 pool = multiprocessing.Pool()
@@ -93,8 +105,8 @@ manager = BaseManager()
 manager.start()
 db = manager.DB()
 result = [ \
-        pool.apply_async(pkg_worker, args=(pkg, debname, db)) \
-        for pkg, debname in pkgs.items() if pkg.startswith("a") \
+        pool.apply_async(pkg_worker, args=(pkg, fileurl, db)) \
+        for pkg, fileurl in pkgs.items() \
         ]
 
 pool.close()

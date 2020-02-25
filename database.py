@@ -25,7 +25,7 @@ class Packages(Base):
 
     id = Column(Integer, primary_key=True)
     pkgname = Column(Text)
-    debname = Column(Text)
+    url = Column(Text)
     filepath = Column(Text)
 
 
@@ -51,4 +51,16 @@ class Database(object):
 
     def erase(self):
         drop_database(db_string)
+
+    def waitinsert(self, ent):
+        session = self.Session()
+        succeed = False
+        while not succeed:
+            try :
+                session.add(ent)
+                session.commit()
+                succeed = True
+            except:
+                session.rollback()
+        session.close()
 
