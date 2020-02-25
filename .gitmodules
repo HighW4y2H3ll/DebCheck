@@ -1,0 +1,6 @@
+[submodule "sqlalchemy"]
+	path = sqlalchemy
+	url = git@github.com:sqlalchemy/sqlalchemy.git
+[submodule "sqlalchemy-utils"]
+	path = sqlalchemy-utils
+	url = git@github.com:kvesteri/sqlalchemy-utils.git
